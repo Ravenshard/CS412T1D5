@@ -107,7 +107,6 @@ class MoveToTarget(smach.State):
                 return 'done'
 
         time.sleep(2)
-        self.callbacks.stop_updating_tags = True
 
         print("Moving to stop position")
         moving_forward = True
@@ -136,6 +135,8 @@ class MoveToTarget(smach.State):
 
             if math.sqrt((bp.x - tp.x) ** 2 + (bp.y - tp.y) ** 2) < 0.3:
                 moving_forward = False
+                self.twist.linear.x = 0
+                self.twist.angular.z = 0
                 return 'stop'
 
             if shutdown_requested:
@@ -147,7 +148,7 @@ class MoveToTarget(smach.State):
 
 class Stop(smach.State):
     def __init__(self, callbacks):
-        smach.State.__init__(self, outcomes=['done', 'move_to_start'])
+        smach.State.__init__(self, outcomes=['done', 'move_to_start', 'move_to_target'])
         self.callbacks = callbacks
         self.cmd_vel_pub = rospy.Publisher('mobile_base/commands/velocity', Twist, queue_size=1)
 
@@ -220,6 +221,8 @@ class MoveToStart(smach.State):
                 previous_difference = difference
 
             if math.sqrt((bp.x - tp.x) ** 2 + (bp.y - tp.y) ** 2) < 0.3:
+                self.twist.linear.x = 0
+                self.twist.angular.z = 0
                 self.callbacks.stop_updating_tags = False
                 if self.callbacks.get_next_target_tag():
                     return 'move_to_target'
@@ -262,6 +265,7 @@ class Callbacks:
                         marker.pose.pose.orientation.w
                     ])[2]
 
+                    #tag.add_to_headings(math.degrees(yaw)-90)
                     tag.add_to_positions(marker.pose.pose.position)
                     tag.found = True
 
@@ -327,6 +331,7 @@ class Tag:
     def get_stop_position(self):
         average_position = self.get_position()
         average_position.x = average_position.x - 0.3
+        average_position.y = average_position.y + 0.1
         return average_position
 
     def get_heading(self):
@@ -384,7 +389,7 @@ def main():
         smach.StateMachine.add('MOVE_TO_TARGET', MoveToTarget(callbacks),
                                transitions={'done': 'DONE', 'stop': 'STOP'})
         smach.StateMachine.add('STOP', Stop(callbacks),
-                               transitions={'done': 'DONE', 'move_to_start': 'MOVE_TO_START'})
+                               transitions={'done': 'DONE', 'move_to_start': 'MOVE_TO_START', 'move_to_target': 'MOVE_TO_TARGET'})
         smach.StateMachine.add('MOVE_TO_START', MoveToStart(callbacks),
                                transitions={'done': 'DONE', 'move_to_target': 'MOVE_TO_TARGET'})
 
