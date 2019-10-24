@@ -33,16 +33,41 @@ class FindCodes(smach.State):
         smach.State.__init__(self, outcomes=['done', 'move_to_target'])
         self.callbacks = callbacks
         self.cmd_vel_pub = rospy.Publisher('mobile_base/commands/velocity', Twist, queue_size=1)
+        self.twist = Twist()
 
     def execute(self, userdata):
         global shutdown_requested
-        while not shutdown_requested:
-            time.sleep(1)
-            # TODO: rotate 360 degrees
-            # Temporary ------------------------------
-            if self.callbacks.target_position is not None:
-                return 'move_to_target'
-        return 'done'
+
+        print("Turning")
+        turning = True
+        previous_difference = None
+        #desired_heading = (self.callbacks.bot_heading + 350) % 360 #TODO
+        desired_heading = (self.callbacks.bot_heading + 90) % 360
+        while turning:
+            difference = minimum_angle_between_headings(desired_heading, self.callbacks.bot_heading)
+            print(difference)
+
+            if previous_difference is None:
+                self.twist.angular.z = 0.4
+            else:
+                if abs(difference) < 1:
+                    turning = False
+                    self.twist.angular.z = 0
+                else:
+                    self.twist.angular.z = 0.4
+
+            self.cmd_vel_pub.publish(self.twist)
+
+            if previous_difference != difference:
+                previous_difference = difference
+
+            if shutdown_requested:
+                return 'done'
+
+        if self.callbacks.get_next_target_tag():
+            return 'move_to_target'
+        else:
+            return 'done'
 
 
 class MoveToTarget(smach.State):
@@ -58,8 +83,10 @@ class MoveToTarget(smach.State):
         print("Turning")
         turning = True
         previous_difference = None
+        target_tag = self.callbacks.target_tag
+        print("tag_id:"+str(target_tag.id))
         while turning:
-            desired_heading = get_bearing_between_points(self.callbacks.bot_position, self.callbacks.target_position)
+            desired_heading = get_bearing_between_points(self.callbacks.bot_position, target_tag.get_position())
             difference = minimum_angle_between_headings(desired_heading, self.callbacks.bot_heading)
 
             if previous_difference is None:
@@ -82,11 +109,11 @@ class MoveToTarget(smach.State):
         time.sleep(2)
         self.callbacks.stop_updating_tags = True
 
-        print("Moving forward")
+        print("Moving to stop position")
         moving_forward = True
         while True:
 
-            desired_heading = get_bearing_between_points(self.callbacks.bot_position, self.callbacks.target_position)
+            desired_heading = get_bearing_between_points(self.callbacks.bot_position, target_tag.get_stop_position())
             difference = minimum_angle_between_headings(desired_heading, self.callbacks.bot_heading)
 
             if previous_difference is None:
@@ -99,11 +126,11 @@ class MoveToTarget(smach.State):
                     self.twist.angular.z = (0.5 - (difference <= 0)) * 2 * 0.4
 
             bp = self.callbacks.bot_position
-            tp = self.callbacks.real_target_position
+            tp = target_tag.get_stop_position()
 
             if previous_difference != difference:
                 t = (bp.x - tp.x) ** 2 + (bp.y - tp.y) ** 2
-                print(str(self.callbacks.target_heading) + " " + str(self.callbacks.bot_heading))
+                #print(str(self.callbacks.target_heading) + " " + str(self.callbacks.bot_heading))
                 print("distance:"+str(t)+" angleD:"+str(difference))
                 previous_difference = difference
 
@@ -116,61 +143,127 @@ class MoveToTarget(smach.State):
 
             self.twist.linear.x = 0.25
             self.cmd_vel_pub.publish(self.twist)
-            self.callbacks.stop_updating_tags = False
 
 
 class Stop(smach.State):
     def __init__(self, callbacks):
-        smach.State.__init__(self, outcomes=['done', 'move_to_target', 'find_codes'])
+        smach.State.__init__(self, outcomes=['done', 'move_to_start'])
         self.callbacks = callbacks
         self.cmd_vel_pub = rospy.Publisher('mobile_base/commands/velocity', Twist, queue_size=1)
 
     def execute(self, userdata):
         global shutdown_requested
         print("Robot has stopped")
+        start = time.time()
         while not shutdown_requested:
-
-            start = time.time()
-            if time.time() - start > 10:
-                return 'move_to_target'  # -----------------------
+            if time.time() - start > 3:
+                return 'move_to_start'
         return 'done'
+
+
+class MoveToStart(smach.State):
+    def __init__(self, callbacks):
+        smach.State.__init__(self, outcomes=['done', 'move_to_target'])
+        self.callbacks = callbacks
+        self.cmd_vel_pub = rospy.Publisher('mobile_base/commands/velocity', Twist, queue_size=1)
+        self.twist = Twist()
+
+    def execute(self, userdata):
+        global shutdown_requested
+
+        print("Turning")
+        turning = True
+        previous_difference = None
+        while turning:
+            desired_heading = get_bearing_between_points(self.callbacks.bot_position, self.callbacks.start_position)
+            difference = minimum_angle_between_headings(desired_heading, self.callbacks.bot_heading)
+
+            if previous_difference is None:
+                self.twist.angular.z = (0.5 - (difference <= 0)) * 2 * 0.4
+            else:
+                if abs(difference) < 1:
+                    turning = False
+                    self.twist.angular.z = 0
+                else:
+                    self.twist.angular.z = (0.5 - (difference <= 0)) * 2 * 0.4
+
+            self.cmd_vel_pub.publish(self.twist)
+
+            if previous_difference != difference:
+                previous_difference = difference
+
+            if shutdown_requested:
+                return 'done'
+
+        print("Moving to start")
+        while True:
+
+            desired_heading = get_bearing_between_points(self.callbacks.bot_position, self.callbacks.start_position)
+            difference = minimum_angle_between_headings(desired_heading, self.callbacks.bot_heading)
+
+            if previous_difference is None:
+                self.twist.angular.z = (0.5 - (difference <= 0)) * 2 * 0.4
+            else:
+                if abs(difference) < 1:
+                    turning = False
+                    self.twist.angular.z = 0
+                else:
+                    self.twist.angular.z = (0.5 - (difference <= 0)) * 2 * 0.4
+
+            bp = self.callbacks.bot_position
+            tp = self.callbacks.start_position
+
+            if previous_difference != difference:
+                t = (bp.x - tp.x) ** 2 + (bp.y - tp.y) ** 2
+                # print(str(self.callbacks.target_heading) + " " + str(self.callbacks.bot_heading))
+                #print("distance:" + str(t) + " angleD:" + str(difference))
+                previous_difference = difference
+
+            if math.sqrt((bp.x - tp.x) ** 2 + (bp.y - tp.y) ** 2) < 0.3:
+                self.callbacks.stop_updating_tags = False
+                if self.callbacks.get_next_target_tag():
+                    return 'move_to_target'
+                else:
+                    return 'done'
+
+            if shutdown_requested:
+                return 'done'
+
+            self.twist.linear.x = 0.25
+            self.cmd_vel_pub.publish(self.twist)
 
 
 class Callbacks:
     def __init__(self):
-        self.target_position = None
-        self.target_heading = None
+        #self.target_position = None
+        #self.target_heading = None
+        # self.real_target_position = None
         self.bot_heading = None
         self.bot_position = None
-        self.real_target_position = None
+        self.target_tag = None
 
-        self.ids = [Tag(1), Tag(2), Tag(3), Tag(4), Tag(5), Tag(6), Tag(7), Tag(8), Tag(9), Tag(10)]
-        self.found_ids = []
+        self.start_position = None
+
+        self.tags = [Tag(1), Tag(2), Tag(3), Tag(4), Tag(5), Tag(6), Tag(7), Tag(8), Tag(9), Tag(10)]
+        self.valid_marker_ids = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        self.target = None
 
         self.stop_updating_tags = False
-        self.i = 0
 
     def qr_callback(self, msg):
         if len(msg.markers) > 0:
             for marker in msg.markers:
-                if marker.id == 5 and self.stop_updating_tags is False:
+                if marker.id in self.valid_marker_ids and self.stop_updating_tags is False:
+                    tag = self.tags[marker.id - 1]
                     yaw = euler_from_quaternion([
                         marker.pose.pose.orientation.x,
                         marker.pose.pose.orientation.y,
                         marker.pose.pose.orientation.z,
                         marker.pose.pose.orientation.w
                     ])[2]
-                    # TODO: add distance in front of qr code
-                    self.ids[5-1].add_to_headings(math.degrees(yaw)+180 - 90)
-                    self.target_heading = self.ids[5-1].get_heading()
-                    #self.target_position = marker.pose.pose.position
-                    p = marker.pose.pose.position
-                    p.x += 0.4
-                    self.target_position = marker.pose.pose.position
-                    self.real_target_position = p
-                   #self.target_position = get_point(marker.pose.pose.position, 0.4, self.target_heading)
 
-                    #self.found = True
+                    tag.add_to_positions(marker.pose.pose.position)
+                    tag.found = True
 
     def odom_callback(self, msg):
         yaw = euler_from_quaternion([
@@ -181,12 +274,26 @@ class Callbacks:
         ])[2]
         self.bot_heading = (yaw + math.pi) * (180 / math.pi)
         self.bot_position = msg.pose.pose.position
+        if self.start_position is None:
+            self.start_position = self.bot_position
+
+    def get_next_target_tag(self):
+        if self.target_tag is None:
+            start_index = 1
+        else:
+            start_index = self.target_tag.id + 1
+
+        for tag_id in range(start_index, 11):
+            if self.tags[tag_id - 1].found:
+                self.target_tag = self.tags[tag_id - 1]
+                return True
+        return False
 
 
 class Tag:
     def __init__(self, id):
         self.id = id
-        self.checked = False
+        self.found = False
         self.positions = []
         self.headings = []
 
@@ -202,9 +309,25 @@ class Tag:
 
     def get_position(self):
         assert len(self.positions) > 0
-        for axis in [1, 2]:
-            print("hello")
-        return self.average_position
+        x_sum = 0
+        y_sum = 0
+        z_sum = 0
+        for position in self.positions:
+            x_sum += position.x
+            y_sum += position.y
+            z_sum += position.z
+        average_position = self.positions[0]
+
+        average_position.x = x_sum/len(self.positions)
+        average_position.y = y_sum/len(self.positions)
+        average_position.z = z_sum/len(self.positions)
+
+        return average_position
+
+    def get_stop_position(self):
+        average_position = self.get_position()
+        average_position.x = average_position.x - 0.3
+        return average_position
 
     def get_heading(self):
         assert len(self.headings) > 0
@@ -261,9 +384,10 @@ def main():
         smach.StateMachine.add('MOVE_TO_TARGET', MoveToTarget(callbacks),
                                transitions={'done': 'DONE', 'stop': 'STOP'})
         smach.StateMachine.add('STOP', Stop(callbacks),
-                               transitions={'done': 'DONE',
-                                            'move_to_target': 'MOVE_TO_TARGET',
-                                            'find_codes': 'FIND_CODES'})
+                               transitions={'done': 'DONE', 'move_to_start': 'MOVE_TO_START'})
+        smach.StateMachine.add('MOVE_TO_START', MoveToStart(callbacks),
+                               transitions={'done': 'DONE', 'move_to_target': 'MOVE_TO_TARGET'})
+
 
     # Create and start the instrospection server - needed for smach_viewer
     sis = smach_ros.IntrospectionServer('TRAVELLER_server', sm_turtle, 'STATEMACHINE')
